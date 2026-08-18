@@ -11,15 +11,18 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="[socker] %(asctime)s - %(message)s")
 
-# 1. Socket Path Handling (Fallback Support)
+# 1. Non-Root Permissive Socket Resolution (~/.socker/socker.sock)
 PRIMARY_SOCKET = "/var/run/socker.sock"
-FALLBACK_SOCKET = "/root/socker.sock"
+USER_SOCKET_DIR = os.path.expanduser("~/.socker")
+FALLBACK_SOCKET = os.path.join(USER_SOCKET_DIR, "socker.sock")
 
 def resolve_socket_path():
-    for path in [PRIMARY_SOCKET, FALLBACK_SOCKET]:
-        dir_path = os.path.dirname(path)
-        if os.access(dir_path, os.W_OK) or os.geteuid() == 0:
-            return path
+    # Pehle /var/run try karega
+    if os.access("/var/run", os.W_OK):
+        return PRIMARY_SOCKET
+    
+    # Agar non-root hai toh strictly ~/.socker/socker.sock use karega
+    os.makedirs(USER_SOCKET_DIR, exist_ok=True)
     return FALLBACK_SOCKET
 
 SOCKET_PATH = resolve_socket_path()
@@ -59,7 +62,6 @@ async def handle_docker_api(reader, writer):
             
         method, uri = parts[0], parts[1]
 
-        # Header parsing
         content_length = 0
         while True:
             line = await reader.readline()
@@ -68,7 +70,6 @@ async def handle_docker_api(reader, writer):
             if line.lower().startswith(b"content-length:"):
                 content_length = int(line.split(b":")[1].strip())
 
-        # Body parsing
         body_data = {}
         if content_length > 0:
             raw_body = await reader.readexact(content_length)
@@ -77,18 +78,13 @@ async def handle_docker_api(reader, writer):
             except Exception:
                 pass
 
-        # Clean URI path
         path = uri.split("?")[0]
 
-        # ----------------- DOCKER API ENDPOINTS -----------------
-        
-        # 1. /_ping
         if path == "/_ping":
             resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
             writer.write(resp.encode())
             await writer.drain()
 
-        # 2. /version
         elif path.endswith("/version"):
             await http_response(writer, 200, {
                 "Platform": {"Name": "Socker Engine"},
@@ -101,32 +97,30 @@ async def handle_docker_api(reader, writer):
                 "Arch": "amd64"
             })
 
-        # 3. /containers/json (docker ps)
         elif path.endswith("/containers/json"):
             containers = []
-            for cid in os.listdir(CONTAINERS_DIR):
-                cfg_path = os.path.join(CONTAINERS_DIR, cid, "config.json")
-                if os.path.exists(cfg_path):
-                    with open(cfg_path) as f:
-                        cdata = json.load(f)
-                        containers.append({
-                            "Id": cdata["Id"],
-                            "Names": [f"/{cdata['Name']}"],
-                            "Image": cdata["Image"],
-                            "State": cdata["Status"],
-                            "Status": f"Up {cdata['Status']}",
-                            "Created": cdata["Created"]
-                        })
+            if os.path.exists(CONTAINERS_DIR):
+                for cid in os.listdir(CONTAINERS_DIR):
+                    cfg_path = os.path.join(CONTAINERS_DIR, cid, "config.json")
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path) as f:
+                            cdata = json.load(f)
+                            containers.append({
+                                "Id": cdata["Id"],
+                                "Names": [f"/{cdata['Name']}"],
+                                "Image": cdata["Image"],
+                                "State": cdata["Status"],
+                                "Status": f"Up {cdata['Status']}",
+                                "Created": cdata["Created"]
+                            })
             await http_response(writer, 200, containers)
 
-        # 4. /containers/create (docker create / run)
         elif path.endswith("/containers/create"):
             cid = os.urandom(8).hex()
             c_name = body_data.get("Name") or f"socker_{cid[:6]}"
             image = body_data.get("Image", "ubuntu:latest")
             host_cfg = body_data.get("HostConfig", {})
 
-            # Limits Extractions (cgroups equivalent structure)
             ram_mb = host_cfg.get("Memory", 0) // (1024 * 1024)
             cpus = host_cfg.get("NanoCpus", 0) / 1e9
 
@@ -148,7 +142,6 @@ async def handle_docker_api(reader, writer):
 
             await http_response(writer, 201, {"Id": cid, "Warnings": []})
 
-        # 5. /containers/{id}/start
         elif "/containers/" in path and path.endswith("/start"):
             cid = path.split("/containers/")[1].split("/")[0]
             cfg_path = os.path.join(CONTAINERS_DIR, cid, "config.json")
@@ -163,7 +156,6 @@ async def handle_docker_api(reader, writer):
             else:
                 await http_response(writer, 404, {"message": "No such container"})
 
-        # 6. /containers/{id}/stop
         elif "/containers/" in path and path.endswith("/stop"):
             cid = path.split("/containers/")[1].split("/")[0]
             cfg_path = os.path.join(CONTAINERS_DIR, cid, "config.json")
@@ -178,7 +170,6 @@ async def handle_docker_api(reader, writer):
             else:
                 await http_response(writer, 404, {"message": "No such container"})
 
-        # 7. /images/create (docker pull)
         elif path.endswith("/images/create"):
             await http_response(writer, 200, {"status": "Download complete"})
 
@@ -198,11 +189,11 @@ async def start_daemon():
 
     server = await asyncio.start_unix_server(handle_docker_api, path=SOCKET_PATH)
     os.chmod(SOCKET_PATH, 0o777)
-    logging.info(f"Socker Daemon (Docker Engine API) live at: {SOCKET_PATH}")
+    logging.info(f"Socker Daemon live at: {SOCKET_PATH}")
     async with server:
         await server.serve_forever()
 
-# ----------------- CLI CLIENT (socker wrapper) -----------------
+# ----------------- CLI CLIENT -----------------
 
 def run_cli_request(method, path, body=None):
     if not os.path.exists(SOCKET_PATH):
@@ -229,24 +220,18 @@ def main():
     parser = argparse.ArgumentParser(prog="socker", description="Non-root Docker Level Container Engine")
     subparsers = parser.add_subparsers(dest="command")
 
-    # socker daemon
     subparsers.add_parser("daemon", help="Run Socker Engine Background Service")
-
-    # socker ps
     subparsers.add_parser("ps", help="List containers")
 
-    # socker pull <image>
     pull_p = subparsers.add_parser("pull", help="Pull image")
     pull_p.add_argument("image", help="Image tag")
 
-    # socker run [options] <image>
     run_p = subparsers.add_parser("run", help="Run container")
     run_p.add_argument("image", help="Image tag")
     run_p.add_argument("--name", help="Container Name")
     run_p.add_argument("-m", "--memory", help="Memory limit (e.g., 512M)")
     run_p.add_argument("--cpus", help="CPU Limit")
 
-    # socker stop <id/name>
     stop_p = subparsers.add_parser("stop", help="Stop container")
     stop_p.add_argument("id", help="Container ID or Name")
 
@@ -287,9 +272,9 @@ def main():
     elif args.command == "stop":
         run_cli_request("POST", f"/containers/{args.id}/stop")
         print(f"Container {args.id} stopped.")
-        
     else:
         parser.print_help()
 
 if __name__ == "__main__":
     main()
+
