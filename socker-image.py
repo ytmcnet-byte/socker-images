@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SOCKER DOCKER-HUB DIRECT PULL ENGINE v2.0
+SOCKER DOCKER-HUB DIRECT PULL ENGINE v2.1
 Directly fetches and extracts Docker Hub / OCI images without Docker Daemon.
 """
 
@@ -15,24 +15,20 @@ CACHE_DIR = os.path.expanduser("~/socker_engine/cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def parse_image_tag(image_tag):
-    """Image tag parsing (e.g., 'ubuntu:latest', 'pterodactyl/yolks:java_21', 'python:3.11-slim')"""
     if ":" in image_tag:
         name, tag = image_tag.split(":", 1)
     else:
         name, tag = image_tag, "latest"
 
-    # Official Docker Hub images handling (e.g. 'ubuntu' -> 'library/ubuntu')
     if "/" not in name:
         name = f"library/{name}"
 
-    # Handle domain prefixes like ghcr.io or docker.io
     if name.startswith("docker.io/"):
         name = name.replace("docker.io/", "")
 
     return name, tag
 
 def get_docker_hub_token(repository):
-    """Fetch anonymous Bearer token from Docker Hub Auth Service"""
     auth_url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repository}:pull"
     req = urllib.request.Request(auth_url, headers={'User-Agent': 'Socker-Engine/2.0'})
     try:
@@ -44,7 +40,6 @@ def get_docker_hub_token(repository):
         return None
 
 def pull_from_docker_hub(image_tag, target_dir):
-    """Pulls layers directly from Docker Hub API v2 and extracts to container root"""
     os.makedirs(target_dir, exist_ok=True)
     repo, tag = parse_image_tag(image_tag)
 
@@ -54,7 +49,6 @@ def pull_from_docker_hub(image_tag, target_dir):
         print("[socker-hub] Error: Failed to obtain Docker Hub token.")
         return False
 
-    # Fetch Manifest v2
     manifest_url = f"https://registry-1.docker.io/v2/{repo}/manifests/{tag}"
     headers = {
         'Authorization': f'Bearer {token}',
@@ -76,7 +70,6 @@ def pull_from_docker_hub(image_tag, target_dir):
 
     print(f"[socker-hub] Found {len(layers)} image layers. Downloading and extracting...")
 
-    # Iterate and extract each layer tarball directly
     for index, layer in enumerate(layers):
         digest = layer.get("digest")
         size_mb = round(layer.get("size", 0) / (1024 * 1024), 2)
@@ -85,7 +78,6 @@ def pull_from_docker_hub(image_tag, target_dir):
         layer_url = f"https://registry-1.docker.io/v2/{repo}/blobs/{digest}"
         layer_tar_path = os.path.join(CACHE_DIR, f"{digest.replace('sha256:', '')}.tar.gz")
 
-        # Download Blob layer if not cached
         if not os.path.exists(layer_tar_path):
             try:
                 blob_req = urllib.request.Request(layer_url, headers={'Authorization': f'Bearer {token}'})
@@ -95,7 +87,6 @@ def pull_from_docker_hub(image_tag, target_dir):
                 print(f"[socker-hub] Error downloading layer {digest}: {e}")
                 return False
 
-        # Extract Layer into container root directory
         try:
             with tarfile.open(layer_tar_path, "r:*") as tar:
                 tar.extractall(path=target_dir)
@@ -105,10 +96,15 @@ def pull_from_docker_hub(image_tag, target_dir):
     print(f"[socker-hub] Successfully pulled and unpacked '{image_tag}' into {target_dir}!")
     return True
 
+# Alias for backward compatibility with socker.py & socker_daemon.py
+def pull_and_unpack(image_tag, target_dir):
+    return pull_from_docker_hub(image_tag, target_dir)
+
 if __name__ == "__main__":
     if len(sys.argv) > 2:
         tag = sys.argv[1]
         out_dir = sys.argv[2]
-        pull_from_docker_hub(tag, out_dir)
+        pull_and_unpack(tag, out_dir)
     else:
         print("Usage: python3 socker_image.py <docker_hub_image:tag> <target_directory>")
+
