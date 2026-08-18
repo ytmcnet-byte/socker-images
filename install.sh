@@ -52,33 +52,18 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 5. Create and enable Systemd Service for daemon
-echo "[5/5] Configuring background Socker Daemon service..."
-SERVICE_DIR="$HOME/.config/systemd/user"
-mkdir -p "$SERVICE_DIR"
+# 5. Launch Socker Daemon (Container / PAWS / Non-Systemd Environment Support)
+echo "[5/5] Launching Socker Daemon in background..."
 
-cat << EOF > "$SERVICE_DIR/socker.service"
-[Unit]
-Description=Socker Non-Root Engine Daemon
-After=network.target
+# Kill previous daemon instance if running
+pkill -f "socker_daemon.py" 2>/dev/null || true
 
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 %h/socker_engine/socker_daemon.py
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable --now socker.service || echo "Warning: Systemd user service could not be started automatically."
+# Start background daemon logging to daemon.log
+nohup python3 "$TARGET_DIR/socker_daemon.py" > "$TARGET_DIR/daemon.log" 2>&1 &
 
 echo "=========================================="
-echo " SUCCESS: Socker Engine Installed!       "
+echo " SUCCESS: Socker Engine Installed & Active! "
 echo "=========================================="
-echo "Usage test:"
-echo "  socker ps"
-echo "  socker run test_id --image ghcr.io/pterodactyl/yolks:java_21 java -version"
-
+echo "Daemon Log: ~/socker_engine/daemon.log"
+echo "Socket Verification:"
+echo "  curl --unix-socket /tmp/socker.sock http://localhost/_ping"
