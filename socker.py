@@ -40,29 +40,45 @@ def list_containers():
             print(f"{c_id:<20} {c_path:<45} {'CREATED':<10}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Socker CLI Container Engine")
-    subparsers = parser.add_subparsers(dest="subcommand")
-
-    run_parser = subparsers.add_parser("run")
-    run_parser.add_argument("container_id", help="Container ID")
-    run_parser.add_argument("--image", default="openjdk:17-slim", help="Docker Hub image tag")
-    run_parser.add_argument("--memory", type=int, default=1024, help="Memory limit in MB")
-    run_parser.add_argument("--cpus", type=int, default=100, help="CPU percentage")
-    run_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Execution command")
-
-    ps_parser = subparsers.add_parser("ps")
-
-    args = parser.parse_args()
-
-    if args.subcommand == "run":
-        # Separate CLI flags from actual shell command execution string
-        raw_cmd = [c for c in args.cmd if not c.startswith("--")]
-        exec_str = " ".join(raw_cmd) if raw_cmd else "java -version"
-        
-        container = SockerContainer(args.container_id, memory_mb=args.memory, cpu_quota=args.cpus)
-        container.run(exec_str, image_tag=args.image)
-    elif args.subcommand == "ps":
+    # Manual argument extraction to completely prevent --image from leaking into shell execution
+    args = sys.argv[1:]
+    
+    if not args or args[0] == "ps":
         list_containers()
+        return
+
+    if args[0] == "run":
+        if len(args) < 2:
+            print("Usage: socker run <container_id> [--image <image>] [--memory <mb>] <command...>")
+            return
+            
+        container_id = args[1]
+        image_tag = "openjdk:17-slim"
+        memory_mb = 1024
+        cpu_quota = 100
+        
+        # Parse known flags and strip them completely
+        cmd_tokens = args[2:]
+        clean_cmd_tokens = []
+        i = 0
+        while i < len(cmd_tokens):
+            token = cmd_tokens[i]
+            if token == "--image" and i + 1 < len(cmd_tokens):
+                image_tag = cmd_tokens[i + 1]
+                i += 2
+            elif token == "--memory" and i + 1 < len(cmd_tokens):
+                memory_mb = int(cmd_tokens[i + 1])
+                i += 2
+            elif token == "--cpus" and i + 1 < len(cmd_tokens):
+                cpu_quota = int(cmd_tokens[i + 1])
+                i += 2
+            else:
+                clean_cmd_tokens.append(token)
+                i += 1
+
+        exec_str = " ".join(clean_cmd_tokens) if clean_cmd_tokens else "java -version"
+        container = SockerContainer(container_id, memory_mb=memory_mb, cpu_quota=cpu_quota)
+        container.run(exec_str, image_tag=image_tag)
 
 if __name__ == "__main__":
     main()
